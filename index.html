@@ -1,0 +1,983 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>autoPose - motion music</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.7.0/p5.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
+    <style>
+        body {
+            margin: 0;
+            padding: 20px;
+            background: #1a1a1a;
+            color: white;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+        .controls {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            z-index: 100;
+            background: rgba(0,0,0,0.95);
+            padding: 16px;
+            border-top: 1px solid rgba(255,255,255,0.1);
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 16px;
+            justify-content: center;
+        }
+        .sensitivity-control {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin: 0;
+        }
+        .sensitivity-control input {
+            width: 120px;
+            margin: 0;
+        }
+        #canvas-container {
+            display: flex;
+            justify-content: center;
+            margin-top: 20px;
+        }
+        button {
+            background: #2c2c2c;
+            color: #ffffff;
+            border: 1px solid #404040;
+            padding: 10px 16px;
+            margin: 0;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: 500;
+            transition: all 0.2s ease;
+            white-space: nowrap;
+        }
+        button:hover {
+            background: #3c3c3c;
+            border-color: #505050;
+        }
+        button:active {
+            background: #1c1c1c;
+        }
+        button.success {
+            background: #1a472a;
+            border-color: #2d6a3e;
+            color: #ffffff;
+        }
+        button.success:hover {
+            background: #22543d;
+        }
+        .debug-info {
+            font-size: 11px;
+            color: #aaa;
+            display: flex;
+            gap: 16px;
+            margin: 0;
+            padding: 0;
+            border: none;
+        }
+        .debug-info span {
+            display: inline-block;
+            min-width: 20px;
+            text-align: right;
+        }
+        h3 {
+            margin: 0;
+            font-size: 16px;
+            font-weight: 600;
+            color: #ffffff;
+            white-space: nowrap;
+        }
+        h4 {
+            margin: 0 0 16px 0;
+            font-size: 16px;
+            font-weight: 600;
+            color: #ffffff;
+        }
+        .success-text {
+            color: #28a745;
+            font-weight: 500;
+        }
+        #audioStatus {
+            margin: 0;
+            font-size: 12px;
+        }
+    </style>
+</head>
+<body>
+    <div class="controls">
+        <h3>autoPose</h3>
+        <button id="audioButton" onclick="startAudioContext()">Start Audio</button>
+        <button onclick="toggleCamera()">Toggle Camera</button>
+        <button onclick="toggleStyleEffect()" id="styleButton">Art: Normal</button>
+        <button onclick="toggleMotionVisualization()">Show Motion</button>
+        
+        <div class="sensitivity-control">
+            <label>BPM:</label>
+            <input type="range" id="bpmSlider" min="80" max="160" value="120" onchange="updateBPM(this.value)">
+            <span id="bpmValue">120</span>
+        </div>
+        
+        <div class="debug-info">
+            <div>Motion: <span id="motionLevel">0</span></div>
+            <div>Drum Vol: <span id="drumVolume">0%</span></div>
+        </div>
+        
+        <p id="audioStatus"><small>Center motion controls drum volume. Bottom motion triggers bass.</small></p>
+    </div>
+
+    <div id="canvas-container"></div>
+
+    <script>
+        // Global variables
+        let video;
+        let prevFrame;
+        let motionPixels = [];
+        let motionThreshold = 30; // Increased from 20 to 30 for less sensitivity
+        let isCameraOn = false;
+        let showMotionVisualization = false;
+        
+        // Audio setup
+        let synths = {};
+        let effects = {};
+        let isAudioStarted = false;
+        let drumLoop = null;
+        let masterBPM = 120;
+        
+        // Visual effects
+        let artStyles = ['normal', 'blackwhite', 'lineart', 'pixel', 'neon', 'posterize'];
+        let currentStyleIndex = 0;
+        let particles = [];
+        let colorPalette = [
+            [255, 100, 100],
+            [100, 255, 100], 
+            [100, 100, 255],
+            [255, 255, 100],
+            [255, 100, 255],
+            [100, 255, 255]
+        ];
+        
+        // Motion zones - made smaller and less overlapping
+        let motionZones = {
+            upper: { x: 100, y: 0, w: 600, h: 150, motion: 0, active: false },
+            lower: { x: 100, y: 450, w: 600, h: 150, motion: 0, active: false },
+            left: { x: 0, y: 150, w: 150, h: 300, motion: 0, active: false },
+            right: { x: 650, y: 150, w: 150, h: 300, motion: 0, active: false },
+            center: { x: 250, y: 200, w: 300, h: 200, motion: 0, active: false }
+        };
+        
+        // Gesture detection - simplified
+        let lastTriggerTime = {};
+        let audioLevels = {
+            harmony: 0,
+            drums: 0,
+            bass: 0,
+            effects: 0,
+            lead: 0
+        };
+
+        function setup() {
+            let canvas = createCanvas(800, 600);
+            canvas.parent('canvas-container');
+            canvas.mousePressed(canvasClicked);
+            
+            setupAudio();
+            
+            for (let i = 0; i < 15; i++) { // Reduced from 30 to 15 background particles
+                particles.push(new Particle());
+            }
+            
+            prevFrame = createGraphics(width, height);
+        }
+
+        function canvasClicked() {
+            if (!isAudioStarted) {
+                console.log('Canvas clicked - attempting to start audio...');
+                startAudioContext();
+            }
+        }
+
+        function keyPressed() {
+            if (keyCode === ENTER && !isAudioStarted) {
+                console.log('Enter pressed - attempting to start audio...');
+                startAudioContext();
+                return;
+            }
+            
+            if (!isAudioStarted) {
+                console.log('Audio not started yet - press Enter or click Start Audio button');
+                return;
+            }
+        }
+
+        function setupAudio() {
+            synths.harmony = new Tone.PolySynth().toDestination();
+            synths.bass = new Tone.MonoSynth().toDestination();
+            synths.lead = new Tone.Synth().toDestination();
+            synths.ambient = new Tone.AMSynth().toDestination();
+            
+            // Create drums that will always play
+            synths.kick = new Tone.MembraneSynth().toDestination();
+            synths.hihat = new Tone.NoiseSynth().toDestination();
+            
+            // Set volumes - drums start silent
+            synths.harmony.volume.value = -12;
+            synths.bass.volume.value = -6;
+            synths.lead.volume.value = -10;
+            synths.ambient.volume.value = -15;
+            synths.kick.volume.value = -60;  // Start silent
+            synths.hihat.volume.value = -60; // Start silent
+            
+            effects.reverb = new Tone.Reverb(1.5).toDestination();
+            effects.delay = new Tone.PingPongDelay("8n", 0.2).toDestination();
+            effects.filter = new Tone.Filter(800, "lowpass").toDestination();
+            
+            synths.harmony.connect(effects.reverb);
+            synths.lead.connect(effects.delay);
+            synths.bass.connect(effects.filter);
+            
+            // Set up master tempo
+            Tone.Transport.bpm.value = masterBPM;
+            
+            // Create constant drum loop
+            drumLoop = new Tone.Loop((time) => {
+                // Kick on beats 1 and 3
+                synths.kick.triggerAttackRelease("C2", "8n", time);
+                synths.kick.triggerAttackRelease("C2", "8n", time + Tone.Time("2n"));
+                
+                // Hi-hat pattern
+                synths.hihat.triggerAttackRelease("16n", time + Tone.Time("8n"));
+                synths.hihat.triggerAttackRelease("16n", time + Tone.Time("4n") + Tone.Time("8n"));
+                synths.hihat.triggerAttackRelease("16n", time + Tone.Time("2n") + Tone.Time("8n"));
+            }, "1m"); // Loop every measure
+        }
+
+        async function startAudioContext() {
+            try {
+                console.log('Attempting to start audio context...');
+                document.getElementById('audioButton').textContent = 'Starting Audio...';
+                document.getElementById('audioButton').disabled = true;
+                
+                if (Tone.context.state !== 'running') {
+                    await Tone.start();
+                    console.log('Tone.js started successfully');
+                }
+                
+                await testAudio();
+                
+                isAudioStarted = true;
+                // Start the constant drum loop and transport
+                drumLoop.start(0);
+                Tone.Transport.start();
+                document.getElementById('audioButton').textContent = 'Audio Ready';
+                document.getElementById('audioButton').className = 'success';
+                document.getElementById('audioStatus').innerHTML = '<strong class="success-text">Audio Ready! Now enable camera and move around!</strong>';
+                console.log('Audio context started - move around to make music!');
+                
+            } catch (error) {
+                console.error('Error starting audio:', error);
+                document.getElementById('audioButton').textContent = 'Audio Failed - Try Again';
+                document.getElementById('audioButton').disabled = false;
+                document.getElementById('audioButton').style.background = '#dc3545';
+            }
+        }
+        
+        async function testAudio() {
+            try {
+                const testSynth = new Tone.Oscillator(440, "sine").toDestination();
+                testSynth.volume.value = -30;
+                testSynth.start();
+                testSynth.stop("+0.1");
+                console.log('Audio test successful');
+            } catch (error) {
+                console.error('Audio test failed:', error);
+                throw error;
+            }
+        }
+
+        function toggleCamera() {
+            if (!isCameraOn) {
+                video = createCapture(VIDEO);
+                video.size(width, height);
+                video.hide();
+                isCameraOn = true;
+                console.log('Camera started');
+            } else {
+                if (video) {
+                    video.remove();
+                    video = null;
+                }
+                isCameraOn = false;
+                console.log('Camera stopped');
+            }
+        }
+
+        function toggleStyleEffect() {
+            currentStyleIndex = (currentStyleIndex + 1) % artStyles.length;
+            let styleName = artStyles[currentStyleIndex];
+            let displayName = styleName.charAt(0).toUpperCase() + styleName.slice(1);
+            document.getElementById('styleButton').textContent = 'Art: ' + displayName;
+            console.log('Art style changed to:', styleName);
+        }
+
+        function toggleMotionVisualization() {
+            showMotionVisualization = !showMotionVisualization;
+        }
+
+        function updateSensitivity(value) {
+            motionThreshold = value;
+            document.getElementById('sensitivityValue').textContent = value;
+        }
+
+        function draw() {
+            let currentStyle = artStyles[currentStyleIndex];
+            
+            // Set background based on style
+            if (currentStyle === 'lineart' || currentStyle === 'blackwhite') {
+                background(255); // White background for line art and B&W
+            } else if (currentStyle === 'neon') {
+                background(0, 0, 20); // Dark blue for neon
+            } else {
+                background(20); // Dark background for others
+            }
+            
+            if (video && isCameraOn) {
+                push();
+                scale(-1, 1);
+                
+                // Apply different art styles
+                switch(currentStyle) {
+                    case 'normal':
+                        image(video, -width, 0, width, height);
+                        break;
+                        
+                    case 'blackwhite':
+                        applyBlackWhiteEffect();
+                        break;
+                        
+                    case 'lineart':
+                        applyLineArtEffect();
+                        break;
+                        
+                    case 'pixel':
+                        applyPixelEffect();
+                        break;
+                        
+                    case 'neon':
+                        applyNeonEffect();
+                        break;
+                        
+                    case 'posterize':
+                        applyPosterizeEffect();
+                        break;
+                }
+                
+                pop();
+                
+                detectMotion();
+                processMotionGestures();
+            } else {
+                push();
+                fill(100);
+                textAlign(CENTER);
+                textSize(20);
+                if (!isAudioStarted) {
+                    text('Click anywhere or press "Start Audio" button', width/2, height/2 - 20);
+                    text('to begin!', width/2, height/2 + 20);
+                } else {
+                    text('Click "Toggle Camera" to start webcam', width/2, height/2);
+                }
+                pop();
+            }
+            
+            if (showMotionVisualization && motionPixels.length > 0) {
+                drawMotionVisualization();
+            }
+            
+            drawMotionZones();
+            
+            for (let i = particles.length - 1; i >= 0; i--) {
+                particles[i].update();
+                particles[i].display();
+                
+                if (particles[i].isDead()) {
+                    particles.splice(i, 1);
+                }
+            }
+            
+            drawAudioVisualization();
+            
+            Object.keys(audioLevels).forEach(key => {
+                audioLevels[key] *= 0.93;
+            });
+            
+            updateDebugInfo();
+        }
+
+        function applyBlackWhiteEffect() {
+            video.loadPixels();
+            for (let x = 0; x < video.width; x += 2) {
+                for (let y = 0; y < video.height; y += 2) {
+                    let index = (x + y * video.width) * 4;
+                    let r = video.pixels[index];
+                    let g = video.pixels[index + 1];
+                    let b = video.pixels[index + 2];
+                    
+                    // Convert to grayscale and apply high contrast
+                    let gray = (r + g + b) / 3;
+                    let bw = gray > 120 ? 255 : 0;
+                    
+                    fill(bw);
+                    noStroke();
+                    let canvasX = map(x, 0, video.width, -width, 0);
+                    let canvasY = map(y, 0, video.height, 0, height);
+                    rect(canvasX, canvasY, 4, 4);
+                }
+            }
+        }
+
+        function applyLineArtEffect() {
+            video.loadPixels();
+            stroke(0);
+            strokeWeight(1);
+            noFill();
+            
+            for (let x = 2; x < video.width - 2; x += 3) {
+                for (let y = 2; y < video.height - 2; y += 3) {
+                    let index = (x + y * video.width) * 4;
+                    let r = video.pixels[index];
+                    let g = video.pixels[index + 1];
+                    let b = video.pixels[index + 2];
+                    let brightness = (r + g + b) / 3;
+                    
+                    // Edge detection
+                    let rightIndex = ((x + 1) + y * video.width) * 4;
+                    let downIndex = (x + (y + 1) * video.width) * 4;
+                    
+                    let rightBrightness = (video.pixels[rightIndex] + video.pixels[rightIndex + 1] + video.pixels[rightIndex + 2]) / 3;
+                    let downBrightness = (video.pixels[downIndex] + video.pixels[downIndex + 1] + video.pixels[downIndex + 2]) / 3;
+                    
+                    let edgeStrength = abs(brightness - rightBrightness) + abs(brightness - downBrightness);
+                    
+                    if (edgeStrength > 30) {
+                        let canvasX = map(x, 0, video.width, -width, 0);
+                        let canvasY = map(y, 0, video.height, 0, height);
+                        point(canvasX, canvasY);
+                    }
+                }
+            }
+        }
+
+        function applyPixelEffect() {
+            video.loadPixels();
+            let pixelSize = 8;
+            
+            for (let x = 0; x < video.width; x += pixelSize) {
+                for (let y = 0; y < video.height; y += pixelSize) {
+                    let index = (x + y * video.width) * 4;
+                    let r = video.pixels[index];
+                    let g = video.pixels[index + 1];
+                    let b = video.pixels[index + 2];
+                    
+                    fill(r, g, b);
+                    noStroke();
+                    let canvasX = map(x, 0, video.width, -width, 0);
+                    let canvasY = map(y, 0, video.height, 0, height);
+                    rect(canvasX, canvasY, pixelSize * 2, pixelSize * 2);
+                }
+            }
+        }
+
+        function applyNeonEffect() {
+            video.loadPixels();
+            blendMode(ADD);
+            
+            for (let x = 0; x < video.width; x += 4) {
+                for (let y = 0; y < video.height; y += 4) {
+                    let index = (x + y * video.width) * 4;
+                    let r = video.pixels[index];
+                    let g = video.pixels[index + 1];
+                    let b = video.pixels[index + 2];
+                    
+                    // Boost colors and create neon effect
+                    if (r > 100) r = 255;
+                    if (g > 100) g = 255;
+                    if (b > 100) b = 255;
+                    
+                    if (r > 50 || g > 50 || b > 50) {
+                        fill(r, g, b, 150);
+                        noStroke();
+                        let canvasX = map(x, 0, video.width, -width, 0);
+                        let canvasY = map(y, 0, video.height, 0, height);
+                        ellipse(canvasX, canvasY, 8, 8);
+                    }
+                }
+            }
+            blendMode(BLEND);
+        }
+
+        function applyPosterizeEffect() {
+            video.loadPixels();
+            
+            for (let x = 0; x < video.width; x += 2) {
+                for (let y = 0; y < video.height; y += 2) {
+                    let index = (x + y * video.width) * 4;
+                    let r = video.pixels[index];
+                    let g = video.pixels[index + 1];
+                    let b = video.pixels[index + 2];
+                    
+                    // Reduce color depth for posterize effect
+                    r = Math.floor(r / 64) * 64;
+                    g = Math.floor(g / 64) * 64;
+                    b = Math.floor(b / 64) * 64;
+                    
+                    fill(r, g, b);
+                    noStroke();
+                    let canvasX = map(x, 0, video.width, -width, 0);
+                    let canvasY = map(y, 0, video.height, 0, height);
+                    rect(canvasX, canvasY, 3, 3);
+                }
+            }
+        }
+
+        function detectMotion() {
+            if (!video) return;
+            
+            video.loadPixels();
+            prevFrame.loadPixels();
+            
+            let totalMotion = 0;
+            motionPixels = [];
+            
+            Object.keys(motionZones).forEach(key => {
+                motionZones[key].motion = 0;
+                motionZones[key].active = false;
+            });
+            
+            for (let x = 0; x < video.width; x += 4) {
+                for (let y = 0; y < video.height; y += 4) {
+                    let index = (x + y * video.width) * 4;
+                    
+                    let rCurrent = video.pixels[index];
+                    let gCurrent = video.pixels[index + 1];
+                    let bCurrent = video.pixels[index + 2];
+                    
+                    let rPrev = prevFrame.pixels[index] || 0;
+                    let gPrev = prevFrame.pixels[index + 1] || 0;
+                    let bPrev = prevFrame.pixels[index + 2] || 0;
+                    
+                    let diff = abs(rCurrent - rPrev) + abs(gCurrent - gPrev) + abs(bCurrent - bPrev);
+                    
+                    if (diff > motionThreshold) {
+                        totalMotion += diff;
+                        motionPixels.push({x: x, y: y, intensity: diff});
+                        
+                        let canvasX = map(x, 0, video.width, width, 0);
+                        let canvasY = map(y, 0, video.height, 0, height);
+                        
+                        Object.keys(motionZones).forEach(zoneKey => {
+                            let zone = motionZones[zoneKey];
+                            if (canvasX >= zone.x && canvasX <= zone.x + zone.w &&
+                                canvasY >= zone.y && canvasY <= zone.y + zone.h) {
+                                zone.motion += diff;
+                            }
+                        });
+                    }
+                }
+            }
+            
+            Object.keys(motionZones).forEach(key => {
+                motionZones[key].active = motionZones[key].motion > 2000; // Increased from 1000 to 2000
+            });
+            
+            prevFrame.image(video, 0, 0);
+        }
+
+        function processMotionGestures() {
+            if (!isAudioStarted) return;
+            
+            // Calculate center motion for drum volume control
+            let centerMotion = motionZones.center.motion;
+            
+            // Convert center motion to drum volume (0% to 80%)
+            let motionLevel = Math.min(centerMotion / 8000, 1.0); // Normalize to 0-1
+            let drumVolumePercent = Math.round(motionLevel * 80); // 0-80%
+            
+            // Convert to decibel scale for volume (-60dB silent to -8dB at 80%)
+            let drumVolumeDB = motionLevel > 0.05 ? 
+                -60 + (motionLevel * 0.8 * 52) : // Maps 0.8 (80%) to -8dB 
+                -60; // Silent below 5% motion
+            
+            // Smoothly adjust drum volumes with better balance
+            synths.kick.volume.rampTo(drumVolumeDB, 0.1);
+            synths.hihat.volume.rampTo(drumVolumeDB - 8, 0.1); // Hi-hat much quieter
+            
+            // Update debug display
+            document.getElementById('drumVolume').textContent = drumVolumePercent + '%';
+            
+            let currentTime = millis();
+            let cooldownTime = 800;
+            
+            // Zone-based instrument triggers
+            if (motionZones.upper.active && 
+                (!lastTriggerTime.harmony || currentTime - lastTriggerTime.harmony > cooldownTime)) {
+                triggerHarmony();
+                lastTriggerTime.harmony = currentTime;
+            }
+            
+            if (motionZones.lower.active && 
+                (!lastTriggerTime.bass || currentTime - lastTriggerTime.bass > cooldownTime * 1.2)) {
+                triggerBass();
+                lastTriggerTime.bass = currentTime;
+            }
+            
+            if ((motionZones.left.active || motionZones.right.active) && 
+                !(motionZones.left.active && motionZones.right.active) &&
+                (!lastTriggerTime.effects || currentTime - lastTriggerTime.effects > cooldownTime * 0.8)) {
+                triggerEffects();
+                lastTriggerTime.effects = currentTime;
+            }
+            
+            if (motionZones.center.motion > 3000 && 
+                (!lastTriggerTime.lead || currentTime - lastTriggerTime.lead > cooldownTime * 0.6)) {
+                triggerLead();
+                lastTriggerTime.lead = currentTime;
+            }
+        }
+
+        function triggerHarmony() {
+            try {
+                let chords = [
+                    ['C4', 'E4', 'G4', 'B4'],
+                    ['F4', 'A4', 'C5', 'E5'],
+                    ['G3', 'B3', 'D4', 'F#4'],
+                    ['A3', 'C4', 'E4', 'G4']
+                ];
+                let chord = random(chords);
+                // Schedule on the next beat for tight sync
+                synths.harmony.triggerAttackRelease(chord, '4n', '+4n');
+                
+                audioLevels.harmony = 1;
+                
+                for (let i = 0; i < 4; i++) {
+                    particles.push(new HarmonyParticle());
+                }
+            } catch (error) {
+                console.error('Error in triggerHarmony:', error);
+            }
+        }
+
+        function updateBPM(value) {
+            masterBPM = value;
+            Tone.Transport.bpm.value = masterBPM;
+            document.getElementById('bpmValue').textContent = value;
+            console.log('BPM updated to:', value);
+        }
+
+        function triggerBass() {
+            try {
+                let bassNotes = ['C1', 'F1', 'G1', 'A1', 'D1'];
+                let note = random(bassNotes);
+                // Schedule on the next eighth note for tight bass sync
+                synths.bass.triggerAttackRelease(note, '8n', '+8n');
+                
+                audioLevels.bass = 1;
+                
+                for (let i = 0; i < 3; i++) {
+                    particles.push(new BassParticle());
+                }
+            } catch (error) {
+                console.error('Error in triggerBass:', error);
+            }
+        }
+
+        function triggerEffects() {
+            try {
+                effects.reverb.wet.value = random(0.2, 0.5);
+                effects.delay.feedback.value = random(0.1, 0.3);
+                effects.filter.frequency.value = random(600, 1000);
+                
+                // Schedule on the next sixteenth note for quick effects sync
+                synths.ambient.triggerAttackRelease('G5', '16n', '+16n');
+                
+                audioLevels.effects = 1;
+                
+                for (let i = 0; i < 5; i++) {
+                    particles.push(new EffectParticle());
+                }
+            } catch (error) {
+                console.error('Error in triggerEffects:', error);
+            }
+        }
+
+        function triggerLead() {
+            try {
+                let leadNotes = ['C5', 'D5', 'E5', 'F5', 'G5', 'A5', 'B5', 'C6'];
+                let note = random(leadNotes);
+                // Schedule on the next sixteenth note for tight lead sync
+                synths.lead.triggerAttackRelease(note, '16n', '+16n');
+                
+                audioLevels.lead = 1;
+                
+                for (let i = 0; i < 8; i++) {
+                    particles.push(new LeadParticle());
+                }
+            } catch (error) {
+                console.error('Error in triggerLead:', error);
+            }
+        }
+
+        function updateDebugInfo() {
+            let totalMotion = Object.values(motionZones).reduce((sum, zone) => sum + zone.motion, 0);
+            
+            document.getElementById('motionLevel').textContent = Math.round(totalMotion / 100);
+            // drumVolume is now updated in processMotionGestures
+        }
+
+        function drawMotionVisualization() {
+            push();
+            for (let motion of motionPixels) {
+                let canvasX = map(motion.x, 0, video.width, width, 0);
+                let canvasY = map(motion.y, 0, video.height, 0, height);
+                
+                fill(255, 0, 0, map(motion.intensity, motionThreshold, 255, 50, 200));
+                noStroke();
+                ellipse(canvasX, canvasY, 3, 3);
+            }
+            pop();
+        }
+
+        function drawMotionZones() {
+            push();
+            stroke(100, 100, 100, 100);
+            strokeWeight(2);
+            noFill();
+            
+            Object.keys(motionZones).forEach(key => {
+                let zone = motionZones[key];
+                if (zone.active) {
+                    stroke(0, 255, 0, 150);
+                    strokeWeight(3);
+                } else {
+                    stroke(100, 100, 100, 60);
+                    strokeWeight(1);
+                }
+                rect(zone.x, zone.y, zone.w, zone.h);
+            });
+            pop();
+        }
+
+        function drawAudioVisualization() {
+            push();
+            blendMode(ADD);
+            
+            if (audioLevels.harmony > 0.1) {
+                stroke(100, 255, 100, audioLevels.harmony * 255);
+                strokeWeight(3);
+                noFill();
+                for (let i = 0; i < height; i += 15) {
+                    let x = sin(i * 0.1 + frameCount * 0.1) * audioLevels.harmony * 120;
+                    ellipse(width/2 + x, i, 30, 30);
+                }
+            }
+            
+            if (audioLevels.drums > 0.1) {
+                fill(255, 100, 100, audioLevels.drums * 200);
+                for (let i = 0; i < width; i += 50) {
+                    rect(i, height - audioLevels.drums * 150, 25, audioLevels.drums * 150);
+                }
+            }
+            
+            if (audioLevels.bass > 0.1) {
+                fill(100, 100, 255, audioLevels.bass * 150);
+                ellipse(width/2, height/2, audioLevels.bass * 400, audioLevels.bass * 400);
+            }
+            
+            if (audioLevels.effects > 0.1) {
+                fill(255, 255, 100, audioLevels.effects * 255);
+                for (let i = 0; i < 20; i++) {
+                    let x = random(width);
+                    let y = random(height);
+                    ellipse(x, y, audioLevels.effects * 10, audioLevels.effects * 10);
+                }
+            }
+            
+            if (audioLevels.lead > 0.1) {
+                stroke(255, 100, 255, audioLevels.lead * 255);
+                strokeWeight(2);
+                for (let i = 0; i < width; i += 30) {
+                    line(i, 0, i + audioLevels.lead * 50, audioLevels.lead * 100);
+                }
+            }
+            
+            pop();
+        }
+
+        // Particle classes
+        class Particle {
+            constructor() {
+                this.x = random(width);
+                this.y = random(height);
+                this.vx = random(-0.5, 0.5);
+                this.vy = random(-0.5, 0.5);
+                this.life = 255;
+                this.color = random(colorPalette);
+            }
+            
+            update() {
+                this.x += this.vx;
+                this.y += this.vy;
+                this.life -= 1;
+                
+                if (this.x < 0 || this.x > width) this.vx *= -1;
+                if (this.y < 0 || this.y > height) this.vy *= -1;
+            }
+            
+            display() {
+                push();
+                fill(this.color[0], this.color[1], this.color[2], this.life);
+                noStroke();
+                ellipse(this.x, this.y, 2, 2);
+                pop();
+            }
+            
+            isDead() {
+                return this.life <= 0;
+            }
+        }
+
+        class HarmonyParticle extends Particle {
+            constructor() {
+                super();
+                this.x = width/2;
+                this.y = 100;
+                this.angle = random(TWO_PI);
+                this.radius = random(50, 200);
+                this.color = [100, 255, 100];
+                this.speed = random(0.02, 0.05);
+            }
+            
+            update() {
+                this.angle += this.speed;
+                this.x = width/2 + cos(this.angle) * this.radius;
+                this.y = 100 + sin(this.angle) * (this.radius * 0.5);
+                this.life -= 1.5;
+            }
+        }
+
+        class DrumParticle extends Particle {
+            constructor() {
+                super();
+                this.x = random(width);
+                this.y = height - 20;
+                this.vx = random(-8, 8);
+                this.vy = random(-20, -10);
+                this.color = [255, 100, 100];
+                this.size = random(3, 8);
+                this.gravity = 0.5;
+            }
+            
+            update() {
+                this.x += this.vx;
+                this.y += this.vy;
+                this.vy += this.gravity;
+                this.life -= 3;
+            }
+            
+            display() {
+                push();
+                fill(this.color[0], this.color[1], this.color[2], this.life);
+                noStroke();
+                ellipse(this.x, this.y, this.size, this.size);
+                pop();
+            }
+        }
+
+        class BassParticle extends Particle {
+            constructor() {
+                super();
+                this.x = width/2;
+                this.y = height/2;
+                this.vx = random(-3, 3);
+                this.vy = random(-3, 3);
+                this.color = [100, 100, 255];
+                this.size = random(8, 20);
+            }
+            
+            update() {
+                super.update();
+                this.size *= 1.02;
+                this.life -= 2;
+            }
+            
+            display() {
+                push();
+                fill(this.color[0], this.color[1], this.color[2], this.life);
+                noStroke();
+                ellipse(this.x, this.y, this.size, this.size);
+                pop();
+            }
+        }
+
+        class EffectParticle extends Particle {
+            constructor() {
+                super();
+                this.x = random(width);
+                this.y = random(height);
+                this.vx = random(-2, 2);
+                this.vy = random(-2, 2);
+                this.color = [255, 255, 100];
+                this.twinkle = random(TWO_PI);
+            }
+            
+            update() {
+                super.update();
+                this.twinkle += 0.2;
+            }
+            
+            display() {
+                push();
+                let alpha = (sin(this.twinkle) + 1) * 0.5 * this.life;
+                fill(this.color[0], this.color[1], this.color[2], alpha);
+                noStroke();
+                ellipse(this.x, this.y, 4, 4);
+                pop();
+            }
+        }
+
+        class LeadParticle extends Particle {
+            constructor() {
+                super();
+                this.x = random(width);
+                this.y = 0;
+                this.vx = random(-1, 1);
+                this.vy = random(2, 5);
+                this.color = [255, 100, 255];
+                this.trail = [];
+            }
+            
+            update() {
+                this.trail.push({x: this.x, y: this.y, life: this.life});
+                if (this.trail.length > 8) this.trail.shift();
+                super.update();
+            }
+            
+            display() {
+                for (let i = 0; i < this.trail.length; i++) {
+                    let t = this.trail[i];
+                    push();
+                    fill(this.color[0], this.color[1], this.color[2], t.life * (i / this.trail.length) * 0.5);
+                    noStroke();
+                    ellipse(t.x, t.y, 3, 3);
+                    pop();
+                }
+                super.display();
+            }
+        }
+    </script>
+</body>
+</html>

@@ -2,7 +2,7 @@
 <html>
 <head>
     <meta charset="utf-8">
-    <title>autoPose - motion music</title>
+    <title>autoPose - motion music (ambient)</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.7.0/p5.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
     <style>
@@ -118,16 +118,17 @@
         
         <div class="sensitivity-control">
             <label>BPM:</label>
-            <input type="range" id="bpmSlider" min="80" max="160" value="120" onchange="updateBPM(this.value)">
-            <span id="bpmValue">120</span>
+            <input type="range" id="bpmSlider" min="60" max="120" value="90" onchange="updateBPM(this.value)">
+            <span id="bpmValue">90</span>
         </div>
         
         <div class="debug-info">
             <div>Motion: <span id="motionLevel">0</span></div>
-            <div>Drum Vol: <span id="drumVolume">0%</span></div>
+            <div>Intensity: <span id="drumVolume">0%</span></div>
+            <div>Mode: <span id="currentMode">-</span></div>
         </div>
         
-        <p id="audioStatus"><small>Center motion controls drum volume. Bottom motion triggers bass.</small></p>
+        <p id="audioStatus"><small>Move slowly for ambient textures. Faster motion adds rhythmic elements.</small></p>
     </div>
 
     <div id="canvas-container"></div>
@@ -137,7 +138,7 @@
         let video;
         let prevFrame;
         let motionPixels = [];
-        let motionThreshold = 30; // Increased from 20 to 30 for less sensitivity
+        let motionThreshold = 30;
         let isCameraOn = false;
         let showMotionVisualization = false;
         
@@ -146,39 +147,94 @@
         let effects = {};
         let isAudioStarted = false;
         let drumLoop = null;
-        let masterBPM = 120;
+        let masterBPM = 90; // Slower default
+        
+        // Musical variables
+        let currentKeyIndex = 0;
+        let targetKeyIndex = 0;
+        let keyTransition = 0;
+        let measureCount = 0;
+        let beatCount = 0;
+        
+        // Define minor keys and their Dorian relatives
+        const keyPairs = [
+            {
+                minor: { root: 'A', notes: ['A', 'B', 'C', 'D', 'E', 'F', 'G'] },
+                dorian: { root: 'D', notes: ['D', 'E', 'F', 'G', 'A', 'B', 'C'] }
+            },
+            {
+                minor: { root: 'E', notes: ['E', 'F#', 'G', 'A', 'B', 'C', 'D'] },
+                dorian: { root: 'A', notes: ['A', 'B', 'C', 'D', 'E', 'F#', 'G'] }
+            },
+            {
+                minor: { root: 'D', notes: ['D', 'E', 'F', 'G', 'A', 'Bb', 'C'] },
+                dorian: { root: 'G', notes: ['G', 'A', 'Bb', 'C', 'D', 'E', 'F'] }
+            },
+            {
+                minor: { root: 'B', notes: ['B', 'C#', 'D', 'E', 'F#', 'G', 'A'] },
+                dorian: { root: 'E', notes: ['E', 'F#', 'G', 'A', 'B', 'C#', 'D'] }
+            }
+        ];
+        
+        let currentMode = 'minor'; // 'minor' or 'dorian'
+        let modeTransition = 0;
+        
+        // Chord progressions for minor and dorian
+        const getChordProgression = (keyPair, mode) => {
+            if (mode === 'minor') {
+                const root = keyPair.minor.root;
+                return [
+                    {name: 'i', notes: [`${root}3`, `${keyPair.minor.notes[2]}3`, `${keyPair.minor.notes[4]}3`], bass: `${root}2`},
+                    {name: 'iv', notes: [`${keyPair.minor.notes[3]}3`, `${keyPair.minor.notes[5]}3`, `${root}4`], bass: `${keyPair.minor.notes[3]}2`},
+                    {name: 'v', notes: [`${keyPair.minor.notes[4]}3`, `${keyPair.minor.notes[6]}3`, `${keyPair.minor.notes[1]}4`], bass: `${keyPair.minor.notes[4]}2`},
+                    {name: 'VI', notes: [`${keyPair.minor.notes[5]}3`, `${root}4`, `${keyPair.minor.notes[2]}4`], bass: `${keyPair.minor.notes[5]}2`}
+                ];
+            } else {
+                const root = keyPair.dorian.root;
+                return [
+                    {name: 'i', notes: [`${root}3`, `${keyPair.dorian.notes[2]}3`, `${keyPair.dorian.notes[4]}3`], bass: `${root}2`},
+                    {name: 'ii', notes: [`${keyPair.dorian.notes[1]}3`, `${keyPair.dorian.notes[3]}3`, `${keyPair.dorian.notes[5]}3`], bass: `${keyPair.dorian.notes[1]}2`},
+                    {name: 'IV', notes: [`${keyPair.dorian.notes[3]}3`, `${keyPair.dorian.notes[5]}3`, `${root}4`], bass: `${keyPair.dorian.notes[3]}2`},
+                    {name: 'v', notes: [`${keyPair.dorian.notes[4]}3`, `${keyPair.dorian.notes[6]}3`, `${keyPair.dorian.notes[1]}4`], bass: `${keyPair.dorian.notes[4]}2`}
+                ];
+            }
+        };
         
         // Visual effects
         let artStyles = ['normal', 'blackwhite', 'lineart', 'pixel', 'neon', 'posterize'];
         let currentStyleIndex = 0;
         let particles = [];
         let colorPalette = [
-            [255, 100, 100],
-            [100, 255, 100], 
-            [100, 100, 255],
-            [255, 255, 100],
-            [255, 100, 255],
-            [100, 255, 255]
+            [100, 120, 180], // Muted blue
+            [120, 100, 140], // Muted purple
+            [100, 140, 120], // Muted teal
+            [140, 120, 100], // Muted brown
+            [120, 120, 140], // Muted gray-purple
+            [100, 130, 130]  // Muted cyan
         ];
         
-        // Motion zones - made smaller and less overlapping
+        // Motion zones
         let motionZones = {
-            upper: { x: 100, y: 0, w: 600, h: 150, motion: 0, active: false },
-            lower: { x: 100, y: 450, w: 600, h: 150, motion: 0, active: false },
-            left: { x: 0, y: 150, w: 150, h: 300, motion: 0, active: false },
-            right: { x: 650, y: 150, w: 150, h: 300, motion: 0, active: false },
-            center: { x: 250, y: 200, w: 300, h: 200, motion: 0, active: false }
+            upper: { x: 100, y: 0, w: 600, h: 150, motion: 0, active: false, smoothMotion: 0 },
+            lower: { x: 100, y: 450, w: 600, h: 150, motion: 0, active: false, smoothMotion: 0 },
+            left: { x: 0, y: 150, w: 150, h: 300, motion: 0, active: false, smoothMotion: 0 },
+            right: { x: 650, y: 150, w: 150, h: 300, motion: 0, active: false, smoothMotion: 0 },
+            center: { x: 250, y: 200, w: 300, h: 200, motion: 0, active: false, smoothMotion: 0 }
         };
         
-        // Gesture detection - simplified
+        // Gesture detection
         let lastTriggerTime = {};
         let audioLevels = {
             harmony: 0,
             drums: 0,
             bass: 0,
-            effects: 0,
+            texture: 0,
             lead: 0
         };
+        
+        // Activity tracking for key changes
+        let activityLevel = 0;
+        let lastKeyChangeTime = 0;
 
         function setup() {
             let canvas = createCanvas(800, 600);
@@ -187,11 +243,12 @@
             
             setupAudio();
             
-            for (let i = 0; i < 15; i++) { // Reduced from 30 to 15 background particles
+            for (let i = 0; i < 8; i++) { // Fewer particles
                 particles.push(new Particle());
             }
             
             prevFrame = createGraphics(width, height);
+            updateCurrentMode();
         }
 
         function canvasClicked() {
@@ -201,59 +258,187 @@
             }
         }
 
-        function keyPressed() {
-            if (keyCode === ENTER && !isAudioStarted) {
-                console.log('Enter pressed - attempting to start audio...');
-                startAudioContext();
-                return;
-            }
-            
-            if (!isAudioStarted) {
-                console.log('Audio not started yet - press Enter or click Start Audio button');
-                return;
-            }
-        }
-
         function setupAudio() {
-            synths.harmony = new Tone.PolySynth().toDestination();
-            synths.bass = new Tone.MonoSynth().toDestination();
-            synths.lead = new Tone.Synth().toDestination();
-            synths.ambient = new Tone.AMSynth().toDestination();
+            // Create audio chain with compression and limiting
+            const compressor = new Tone.Compressor({
+                threshold: -24,
+                ratio: 4,
+                attack: 0.003,
+                release: 0.1
+            }).toDestination();
             
-            // Create drums that will always play
-            synths.kick = new Tone.MembraneSynth().toDestination();
-            synths.hihat = new Tone.NoiseSynth().toDestination();
+            const limiter = new Tone.Limiter(-3).connect(compressor);
             
-            // Set volumes - drums start silent
-            synths.harmony.volume.value = -12;
-            synths.bass.volume.value = -6;
-            synths.lead.volume.value = -10;
-            synths.ambient.volume.value = -15;
-            synths.kick.volume.value = -60;  // Start silent
-            synths.hihat.volume.value = -60; // Start silent
+            // Ambient pad synth
+            synths.harmony = new Tone.PolySynth(Tone.Synth, {
+                oscillator: { type: "sine" },
+                envelope: {
+                    attack: 2,
+                    decay: 1,
+                    sustain: 0.5,
+                    release: 3
+                }
+            }).connect(limiter);
             
-            effects.reverb = new Tone.Reverb(1.5).toDestination();
-            effects.delay = new Tone.PingPongDelay("8n", 0.2).toDestination();
-            effects.filter = new Tone.Filter(800, "lowpass").toDestination();
+            // Sub bass
+            synths.bass = new Tone.MonoSynth({
+                oscillator: { type: "sine" },
+                envelope: {
+                    attack: 0.1,
+                    decay: 0.3,
+                    sustain: 0.4,
+                    release: 1
+                },
+                filter: {
+                    Q: 1,
+                    frequency: 150,
+                    type: "lowpass"
+                }
+            }).connect(limiter);
             
+            // Texture/lead synth
+            synths.lead = new Tone.FMSynth({
+                harmonicity: 2,
+                modulationIndex: 2,
+                oscillator: { type: "sine" },
+                envelope: {
+                    attack: 0.5,
+                    decay: 0.5,
+                    sustain: 0.2,
+                    release: 2
+                }
+            }).connect(limiter);
+            
+            // Ambient texture generator
+            synths.texture = new Tone.AMSynth({
+                harmonicity: 3,
+                oscillator: { type: "sine" },
+                envelope: {
+                    attack: 3,
+                    decay: 2,
+                    sustain: 0.3,
+                    release: 5
+                }
+            }).connect(limiter);
+            
+            // Minimal percussion
+            synths.kick = new Tone.MembraneSynth({
+                pitchDecay: 0.05,
+                octaves: 10,
+                oscillator: { type: "sine" },
+                envelope: {
+                    attack: 0.001,
+                    decay: 0.4,
+                    sustain: 0.01,
+                    release: 1.4
+                }
+            }).connect(limiter);
+            
+            synths.hihat = new Tone.NoiseSynth({
+                noise: { type: "white" },
+                envelope: {
+                    attack: 0.001,
+                    decay: 0.03,
+                    sustain: 0,
+                    release: 0.03
+                }
+            }).connect(limiter);
+            
+            // Set very low initial volumes
+            synths.harmony.volume.value = -20;
+            synths.bass.volume.value = -18;
+            synths.lead.volume.value = -22;
+            synths.texture.volume.value = -24;
+            synths.kick.volume.value = -60;
+            synths.hihat.volume.value = -60;
+            
+            // Ambient effects
+            effects.reverb = new Tone.Reverb({
+                decay: 5,
+                wet: 0.4
+            }).connect(limiter);
+            
+            effects.delay = new Tone.FeedbackDelay({
+                delayTime: "4n.",
+                feedback: 0.2,
+                wet: 0.15
+            }).connect(limiter);
+            
+            effects.chorus = new Tone.Chorus({
+                frequency: 0.5,
+                delayTime: 5,
+                depth: 0.3,
+                wet: 0.2
+            }).connect(limiter);
+            
+            // Connect synths to effects
             synths.harmony.connect(effects.reverb);
+            synths.harmony.connect(effects.chorus);
             synths.lead.connect(effects.delay);
-            synths.bass.connect(effects.filter);
+            synths.texture.connect(effects.reverb);
             
             // Set up master tempo
             Tone.Transport.bpm.value = masterBPM;
             
-            // Create constant drum loop
+            // Minimal drum loop
             drumLoop = new Tone.Loop((time) => {
-                // Kick on beats 1 and 3
-                synths.kick.triggerAttackRelease("C2", "8n", time);
-                synths.kick.triggerAttackRelease("C2", "8n", time + Tone.Time("2n"));
+                beatCount = (beatCount + 1) % 16;
+                if (beatCount === 0) {
+                    measureCount++;
+                    
+                    // Check for mode/key changes every 8 measures
+                    if (measureCount % 8 === 0) {
+                        checkForModeChange();
+                    }
+                    
+                    if (measureCount % 16 === 0) {
+                        checkForKeyChange();
+                    }
+                }
                 
-                // Hi-hat pattern
-                synths.hihat.triggerAttackRelease("16n", time + Tone.Time("8n"));
-                synths.hihat.triggerAttackRelease("16n", time + Tone.Time("4n") + Tone.Time("8n"));
-                synths.hihat.triggerAttackRelease("16n", time + Tone.Time("2n") + Tone.Time("8n"));
-            }, "1m"); // Loop every measure
+                // Very minimal drum pattern - only when there's significant motion
+                let totalMotion = Object.values(motionZones).reduce((sum, zone) => sum + zone.smoothMotion, 0);
+                
+                if (totalMotion > 0.2) {
+                    if (beatCount === 0) {
+                        synths.kick.triggerAttackRelease("C1", "8n", time, 0.3);
+                    }
+                    
+                    if (beatCount === 8 && totalMotion > 0.4) {
+                        synths.kick.triggerAttackRelease("C1", "8n", time, 0.2);
+                    }
+                    
+                    if ((beatCount === 4 || beatCount === 12) && totalMotion > 0.6) {
+                        synths.hihat.triggerAttackRelease("32n", time, 0.1);
+                    }
+                }
+            }, "16n");
+        }
+
+        function updateCurrentMode() {
+            const keyPair = keyPairs[Math.floor(currentKeyIndex)];
+            const modeName = currentMode === 'minor' ? `${keyPair.minor.root}m` : `${keyPair.dorian.root} Dorian`;
+            document.getElementById('currentMode').textContent = modeName;
+        }
+
+        function checkForModeChange() {
+            // Change between minor and dorian based on activity
+            if (activityLevel > 0.5 && currentMode === 'minor') {
+                currentMode = 'dorian';
+                updateCurrentMode();
+            } else if (activityLevel < 0.3 && currentMode === 'dorian') {
+                currentMode = 'minor';
+                updateCurrentMode();
+            }
+        }
+
+        function checkForKeyChange() {
+            const currentTime = millis();
+            if (currentTime - lastKeyChangeTime > 30000) { // At least 30 seconds between changes
+                // Choose next key based on circle of fifths or relative keys
+                targetKeyIndex = (currentKeyIndex + 1) % keyPairs.length;
+                lastKeyChangeTime = currentTime;
+            }
         }
 
         async function startAudioContext() {
@@ -270,13 +455,12 @@
                 await testAudio();
                 
                 isAudioStarted = true;
-                // Start the constant drum loop and transport
                 drumLoop.start(0);
                 Tone.Transport.start();
                 document.getElementById('audioButton').textContent = 'Audio Ready';
                 document.getElementById('audioButton').className = 'success';
-                document.getElementById('audioStatus').innerHTML = '<strong class="success-text">Audio Ready! Now enable camera and move around!</strong>';
-                console.log('Audio context started - move around to make music!');
+                document.getElementById('audioStatus').innerHTML = '<strong class="success-text">Audio Ready! Enable camera for motion-controlled ambience.</strong>';
+                console.log('Audio context started - move slowly for ambient textures!');
                 
             } catch (error) {
                 console.error('Error starting audio:', error);
@@ -289,7 +473,7 @@
         async function testAudio() {
             try {
                 const testSynth = new Tone.Oscillator(440, "sine").toDestination();
-                testSynth.volume.value = -30;
+                testSynth.volume.value = -40;
                 testSynth.start();
                 testSynth.stop("+0.1");
                 console.log('Audio test successful');
@@ -321,16 +505,16 @@
             let styleName = artStyles[currentStyleIndex];
             let displayName = styleName.charAt(0).toUpperCase() + styleName.slice(1);
             document.getElementById('styleButton').textContent = 'Art: ' + displayName;
-            console.log('Art style changed to:', styleName);
         }
 
         function toggleMotionVisualization() {
             showMotionVisualization = !showMotionVisualization;
         }
 
-        function updateSensitivity(value) {
-            motionThreshold = value;
-            document.getElementById('sensitivityValue').textContent = value;
+        function updateBPM(value) {
+            masterBPM = value;
+            Tone.Transport.bpm.value = masterBPM;
+            document.getElementById('bpmValue').textContent = value;
         }
 
         function draw() {
@@ -338,11 +522,11 @@
             
             // Set background based on style
             if (currentStyle === 'lineart' || currentStyle === 'blackwhite') {
-                background(255); // White background for line art and B&W
+                background(255);
             } else if (currentStyle === 'neon') {
-                background(0, 0, 20); // Dark blue for neon
+                background(0, 0, 20);
             } else {
-                background(20); // Dark background for others
+                background(20);
             }
             
             if (video && isCameraOn) {
@@ -354,23 +538,18 @@
                     case 'normal':
                         image(video, -width, 0, width, height);
                         break;
-                        
                     case 'blackwhite':
                         applyBlackWhiteEffect();
                         break;
-                        
                     case 'lineart':
                         applyLineArtEffect();
                         break;
-                        
                     case 'pixel':
                         applyPixelEffect();
                         break;
-                        
                     case 'neon':
                         applyNeonEffect();
                         break;
-                        
                     case 'posterize':
                         applyPosterizeEffect();
                         break;
@@ -411,9 +590,20 @@
             
             drawAudioVisualization();
             
+            // Fade audio levels
             Object.keys(audioLevels).forEach(key => {
-                audioLevels[key] *= 0.93;
+                audioLevels[key] *= 0.95;
             });
+            
+            // Smooth key transitions
+            if (Math.abs(targetKeyIndex - currentKeyIndex) > 0.01) {
+                currentKeyIndex += (targetKeyIndex - currentKeyIndex) * 0.02;
+                updateCurrentMode();
+            }
+            
+            // Update activity level
+            let totalMotion = Object.values(motionZones).reduce((sum, zone) => sum + zone.motion, 0);
+            activityLevel = activityLevel * 0.95 + (totalMotion / 50000) * 0.05;
             
             updateDebugInfo();
         }
@@ -427,7 +617,6 @@
                     let g = video.pixels[index + 1];
                     let b = video.pixels[index + 2];
                     
-                    // Convert to grayscale and apply high contrast
                     let gray = (r + g + b) / 3;
                     let bw = gray > 120 ? 255 : 0;
                     
@@ -454,7 +643,6 @@
                     let b = video.pixels[index + 2];
                     let brightness = (r + g + b) / 3;
                     
-                    // Edge detection
                     let rightIndex = ((x + 1) + y * video.width) * 4;
                     let downIndex = (x + (y + 1) * video.width) * 4;
                     
@@ -503,7 +691,6 @@
                     let g = video.pixels[index + 1];
                     let b = video.pixels[index + 2];
                     
-                    // Boost colors and create neon effect
                     if (r > 100) r = 255;
                     if (g > 100) g = 255;
                     if (b > 100) b = 255;
@@ -530,7 +717,6 @@
                     let g = video.pixels[index + 1];
                     let b = video.pixels[index + 2];
                     
-                    // Reduce color depth for posterize effect
                     r = Math.floor(r / 64) * 64;
                     g = Math.floor(g / 64) * 64;
                     b = Math.floor(b / 64) * 64;
@@ -590,8 +776,10 @@
                 }
             }
             
+            // Smooth motion values
             Object.keys(motionZones).forEach(key => {
-                motionZones[key].active = motionZones[key].motion > 2000; // Increased from 1000 to 2000
+                motionZones[key].smoothMotion = motionZones[key].smoothMotion * 0.8 + (motionZones[key].motion / 10000) * 0.2;
+                motionZones[key].active = motionZones[key].smoothMotion > 0.15;
             });
             
             prevFrame.image(video, 0, 0);
@@ -600,70 +788,77 @@
         function processMotionGestures() {
             if (!isAudioStarted) return;
             
-            // Calculate center motion for drum volume control
-            let centerMotion = motionZones.center.motion;
+            // Overall motion affects drum presence and filter
+            let centerMotion = motionZones.center.smoothMotion;
+            let intensityPercent = Math.round(Math.min(centerMotion * 100, 100));
             
-            // Convert center motion to drum volume (0% to 80%)
-            let motionLevel = Math.min(centerMotion / 8000, 1.0); // Normalize to 0-1
-            let drumVolumePercent = Math.round(motionLevel * 80); // 0-80%
+            // Very subtle drum volume control
+            let drumVolumeDB = centerMotion > 0.1 ? 
+                -40 + (centerMotion * 20) : // Max -20dB
+                -60;
             
-            // Convert to decibel scale for volume (-60dB silent to -8dB at 80%)
-            let drumVolumeDB = motionLevel > 0.05 ? 
-                -60 + (motionLevel * 0.8 * 52) : // Maps 0.8 (80%) to -8dB 
-                -60; // Silent below 5% motion
+            synths.kick.volume.rampTo(drumVolumeDB, 0.5);
+            synths.hihat.volume.rampTo(drumVolumeDB - 10, 0.5);
             
-            // Smoothly adjust drum volumes with better balance
-            synths.kick.volume.rampTo(drumVolumeDB, 0.1);
-            synths.hihat.volume.rampTo(drumVolumeDB - 8, 0.1); // Hi-hat much quieter
-            
-            // Update debug display
-            document.getElementById('drumVolume').textContent = drumVolumePercent + '%';
+            document.getElementById('drumVolume').textContent = intensityPercent + '%';
             
             let currentTime = millis();
-            let cooldownTime = 800;
             
-            // Zone-based instrument triggers
-            if (motionZones.upper.active && 
-                (!lastTriggerTime.harmony || currentTime - lastTriggerTime.harmony > cooldownTime)) {
-                triggerHarmony();
+            // Less frequent triggering
+            let harmonyInterval = 3000 - (activityLevel * 1500); // 1.5-3 seconds
+            let bassInterval = 4000 - (activityLevel * 2000); // 2-4 seconds
+            let textureInterval = 5000 - (activityLevel * 2000); // 3-5 seconds
+            
+            // Get current chord progression
+            const keyPair = keyPairs[Math.floor(currentKeyIndex)];
+            const progression = getChordProgression(keyPair, currentMode);
+            const currentChord = progression[measureCount % 4];
+            
+            // Upper zone - harmony
+            if (motionZones.upper.smoothMotion > 0.1 && 
+                (!lastTriggerTime.harmony || currentTime - lastTriggerTime.harmony > harmonyInterval)) {
+                triggerHarmony(currentChord);
                 lastTriggerTime.harmony = currentTime;
             }
             
-            if (motionZones.lower.active && 
-                (!lastTriggerTime.bass || currentTime - lastTriggerTime.bass > cooldownTime * 1.2)) {
-                triggerBass();
+            // Lower zone - bass
+            if (motionZones.lower.smoothMotion > 0.1 && 
+                (!lastTriggerTime.bass || currentTime - lastTriggerTime.bass > bassInterval)) {
+                triggerBass(currentChord);
                 lastTriggerTime.bass = currentTime;
             }
             
-            if ((motionZones.left.active || motionZones.right.active) && 
-                !(motionZones.left.active && motionZones.right.active) &&
-                (!lastTriggerTime.effects || currentTime - lastTriggerTime.effects > cooldownTime * 0.8)) {
-                triggerEffects();
-                lastTriggerTime.effects = currentTime;
+            // Side zones - textures
+            if ((motionZones.left.smoothMotion > 0.1 || motionZones.right.smoothMotion > 0.1) && 
+                (!lastTriggerTime.texture || currentTime - lastTriggerTime.texture > textureInterval)) {
+                triggerTexture(keyPair, currentMode);
+                lastTriggerTime.texture = currentTime;
             }
             
-            if (motionZones.center.motion > 3000 && 
-                (!lastTriggerTime.lead || currentTime - lastTriggerTime.lead > cooldownTime * 0.6)) {
-                triggerLead();
+            // Center intense motion - lead notes
+            if (motionZones.center.smoothMotion > 0.3 && 
+                (!lastTriggerTime.lead || currentTime - lastTriggerTime.lead > 2000)) {
+                triggerLead(keyPair, currentMode);
                 lastTriggerTime.lead = currentTime;
             }
         }
 
-        function triggerHarmony() {
+        function triggerHarmony(chord) {
             try {
-                let chords = [
-                    ['C4', 'E4', 'G4', 'B4'],
-                    ['F4', 'A4', 'C5', 'E5'],
-                    ['G3', 'B3', 'D4', 'F#4'],
-                    ['A3', 'C4', 'E4', 'G4']
-                ];
-                let chord = random(chords);
-                // Schedule on the next beat for tight sync
-                synths.harmony.triggerAttackRelease(chord, '4n', '+4n');
+                // Add ambient voicings
+                let voicing = [...chord.notes];
+                if (random() > 0.6) {
+                    // Add 9th
+                    let ninth = Tone.Frequency(voicing[0]).transpose(14).toNote();
+                    voicing.push(ninth);
+                }
+                
+                let velocity = 0.2 + (motionZones.upper.smoothMotion * 0.3);
+                synths.harmony.triggerAttackRelease(voicing, '2m', '+4n', velocity);
                 
                 audioLevels.harmony = 1;
                 
-                for (let i = 0; i < 4; i++) {
+                for (let i = 0; i < 2; i++) {
                     particles.push(new HarmonyParticle());
                 }
             } catch (error) {
@@ -671,59 +866,57 @@
             }
         }
 
-        function updateBPM(value) {
-            masterBPM = value;
-            Tone.Transport.bpm.value = masterBPM;
-            document.getElementById('bpmValue').textContent = value;
-            console.log('BPM updated to:', value);
-        }
-
-        function triggerBass() {
+        function triggerBass(chord) {
             try {
-                let bassNotes = ['C1', 'F1', 'G1', 'A1', 'D1'];
-                let note = random(bassNotes);
-                // Schedule on the next eighth note for tight bass sync
-                synths.bass.triggerAttackRelease(note, '8n', '+8n');
+                let bassNote = chord.bass;
+                let velocity = 0.3 + (motionZones.lower.smoothMotion * 0.3);
+                
+                synths.bass.triggerAttackRelease(bassNote, '1m', '+8n', velocity);
                 
                 audioLevels.bass = 1;
                 
-                for (let i = 0; i < 3; i++) {
-                    particles.push(new BassParticle());
-                }
+                particles.push(new BassParticle());
             } catch (error) {
                 console.error('Error in triggerBass:', error);
             }
         }
 
-        function triggerEffects() {
+        function triggerTexture(keyPair, mode) {
             try {
-                effects.reverb.wet.value = random(0.2, 0.5);
-                effects.delay.feedback.value = random(0.1, 0.3);
-                effects.filter.frequency.value = random(600, 1000);
+                const scale = mode === 'minor' ? keyPair.minor.notes : keyPair.dorian.notes;
+                const octave = random([4, 5]);
+                const note = random(scale) + octave;
                 
-                // Schedule on the next sixteenth note for quick effects sync
-                synths.ambient.triggerAttackRelease('G5', '16n', '+16n');
+                let velocity = 0.2 + (random() * 0.2);
+                synths.texture.triggerAttackRelease(note, '4m', '+2n', velocity);
                 
-                audioLevels.effects = 1;
+                audioLevels.texture = 1;
                 
-                for (let i = 0; i < 5; i++) {
-                    particles.push(new EffectParticle());
+                for (let i = 0; i < 3; i++) {
+                    particles.push(new TextureParticle());
                 }
             } catch (error) {
-                console.error('Error in triggerEffects:', error);
+                console.error('Error in triggerTexture:', error);
             }
         }
 
-        function triggerLead() {
+        function triggerLead(keyPair, mode) {
             try {
-                let leadNotes = ['C5', 'D5', 'E5', 'F5', 'G5', 'A5', 'B5', 'C6'];
-                let note = random(leadNotes);
-                // Schedule on the next sixteenth note for tight lead sync
-                synths.lead.triggerAttackRelease(note, '16n', '+16n');
+                const scale = mode === 'minor' ? keyPair.minor.notes : keyPair.dorian.notes;
+                const octave = random([5, 6]);
+                
+                // Simple melodic fragment
+                let note1 = random(scale) + octave;
+                let note2 = random(scale) + octave;
+                
+                let velocity = 0.15 + (motionZones.center.smoothMotion * 0.2);
+                
+                synths.lead.triggerAttackRelease(note1, '4n', '+0', velocity);
+                synths.lead.triggerAttackRelease(note2, '4n', '+4n', velocity * 0.8);
                 
                 audioLevels.lead = 1;
                 
-                for (let i = 0; i < 8; i++) {
+                for (let i = 0; i < 4; i++) {
                     particles.push(new LeadParticle());
                 }
             } catch (error) {
@@ -733,9 +926,7 @@
 
         function updateDebugInfo() {
             let totalMotion = Object.values(motionZones).reduce((sum, zone) => sum + zone.motion, 0);
-            
             document.getElementById('motionLevel').textContent = Math.round(totalMotion / 100);
-            // drumVolume is now updated in processMotionGestures
         }
 
         function drawMotionVisualization() {
@@ -744,7 +935,7 @@
                 let canvasX = map(motion.x, 0, video.width, width, 0);
                 let canvasY = map(motion.y, 0, video.height, 0, height);
                 
-                fill(255, 0, 0, map(motion.intensity, motionThreshold, 255, 50, 200));
+                fill(150, 100, 200, map(motion.intensity, motionThreshold, 255, 30, 150));
                 noStroke();
                 ellipse(canvasX, canvasY, 3, 3);
             }
@@ -753,20 +944,20 @@
 
         function drawMotionZones() {
             push();
-            stroke(100, 100, 100, 100);
-            strokeWeight(2);
             noFill();
             
             Object.keys(motionZones).forEach(key => {
                 let zone = motionZones[key];
+                let alpha = zone.smoothMotion * 255;
+                
                 if (zone.active) {
-                    stroke(0, 255, 0, 150);
-                    strokeWeight(3);
+                    stroke(100, 150, 200, alpha);
+                    strokeWeight(2);
                 } else {
-                    stroke(100, 100, 100, 60);
+                    stroke(80, 80, 100, alpha * 0.3);
                     strokeWeight(1);
                 }
-                rect(zone.x, zone.y, zone.w, zone.h);
+                rect(zone.x, zone.y, zone.w, zone.h, 10);
             });
             pop();
         }
@@ -776,41 +967,35 @@
             blendMode(ADD);
             
             if (audioLevels.harmony > 0.1) {
-                stroke(100, 255, 100, audioLevels.harmony * 255);
-                strokeWeight(3);
-                noFill();
-                for (let i = 0; i < height; i += 15) {
-                    let x = sin(i * 0.1 + frameCount * 0.1) * audioLevels.harmony * 120;
-                    ellipse(width/2 + x, i, 30, 30);
-                }
-            }
-            
-            if (audioLevels.drums > 0.1) {
-                fill(255, 100, 100, audioLevels.drums * 200);
-                for (let i = 0; i < width; i += 50) {
-                    rect(i, height - audioLevels.drums * 150, 25, audioLevels.drums * 150);
-                }
+                fill(100, 120, 180, audioLevels.harmony * 60);
+                noStroke();
+                ellipse(width/2, height/3, audioLevels.harmony * 300, audioLevels.harmony * 200);
             }
             
             if (audioLevels.bass > 0.1) {
-                fill(100, 100, 255, audioLevels.bass * 150);
-                ellipse(width/2, height/2, audioLevels.bass * 400, audioLevels.bass * 400);
+                fill(120, 100, 140, audioLevels.bass * 40);
+                ellipse(width/2, height * 0.8, audioLevels.bass * 400, audioLevels.bass * 100);
             }
             
-            if (audioLevels.effects > 0.1) {
-                fill(255, 255, 100, audioLevels.effects * 255);
-                for (let i = 0; i < 20; i++) {
-                    let x = random(width);
-                    let y = random(height);
-                    ellipse(x, y, audioLevels.effects * 10, audioLevels.effects * 10);
+            if (audioLevels.texture > 0.1) {
+                fill(100, 140, 120, audioLevels.texture * 50);
+                for (let i = 0; i < 5; i++) {
+                    let x = width * (0.2 + i * 0.15);
+                    let y = height/2 + sin(frameCount * 0.02 + i) * audioLevels.texture * 50;
+                    ellipse(x, y, audioLevels.texture * 30, audioLevels.texture * 30);
                 }
             }
             
             if (audioLevels.lead > 0.1) {
-                stroke(255, 100, 255, audioLevels.lead * 255);
-                strokeWeight(2);
-                for (let i = 0; i < width; i += 30) {
-                    line(i, 0, i + audioLevels.lead * 50, audioLevels.lead * 100);
+                stroke(140, 120, 100, audioLevels.lead * 100);
+                strokeWeight(1);
+                noFill();
+                for (let i = 0; i < 10; i++) {
+                    let angle = frameCount * 0.01 + i * 0.6;
+                    let r = audioLevels.lead * 100 + i * 10;
+                    let x = width/2 + cos(angle) * r;
+                    let y = height/2 + sin(angle) * r;
+                    line(width/2, height/2, x, y);
                 }
             }
             
@@ -822,16 +1007,17 @@
             constructor() {
                 this.x = random(width);
                 this.y = random(height);
-                this.vx = random(-0.5, 0.5);
-                this.vy = random(-0.5, 0.5);
+                this.vx = random(-0.2, 0.2);
+                this.vy = random(-0.2, 0.2);
                 this.life = 255;
                 this.color = random(colorPalette);
+                this.size = random(1, 3);
             }
             
             update() {
                 this.x += this.vx;
                 this.y += this.vy;
-                this.life -= 1;
+                this.life -= 0.5;
                 
                 if (this.x < 0 || this.x > width) this.vx *= -1;
                 if (this.y < 0 || this.y > height) this.vy *= -1;
@@ -839,9 +1025,9 @@
             
             display() {
                 push();
-                fill(this.color[0], this.color[1], this.color[2], this.life);
+                fill(this.color[0], this.color[1], this.color[2], this.life * 0.5);
                 noStroke();
-                ellipse(this.x, this.y, 2, 2);
+                ellipse(this.x, this.y, this.size, this.size);
                 pop();
             }
             
@@ -853,47 +1039,17 @@
         class HarmonyParticle extends Particle {
             constructor() {
                 super();
-                this.x = width/2;
-                this.y = 100;
-                this.angle = random(TWO_PI);
-                this.radius = random(50, 200);
-                this.color = [100, 255, 100];
-                this.speed = random(0.02, 0.05);
+                this.x = width/2 + random(-100, 100);
+                this.y = height/3;
+                this.vx = random(-0.5, 0.5);
+                this.vy = random(-0.3, 0.1);
+                this.color = [100, 120, 180];
+                this.size = random(3, 6);
             }
             
             update() {
-                this.angle += this.speed;
-                this.x = width/2 + cos(this.angle) * this.radius;
-                this.y = 100 + sin(this.angle) * (this.radius * 0.5);
-                this.life -= 1.5;
-            }
-        }
-
-        class DrumParticle extends Particle {
-            constructor() {
-                super();
-                this.x = random(width);
-                this.y = height - 20;
-                this.vx = random(-8, 8);
-                this.vy = random(-20, -10);
-                this.color = [255, 100, 100];
-                this.size = random(3, 8);
-                this.gravity = 0.5;
-            }
-            
-            update() {
-                this.x += this.vx;
-                this.y += this.vy;
-                this.vy += this.gravity;
-                this.life -= 3;
-            }
-            
-            display() {
-                push();
-                fill(this.color[0], this.color[1], this.color[2], this.life);
-                noStroke();
-                ellipse(this.x, this.y, this.size, this.size);
-                pop();
+                super.update();
+                this.size *= 1.005;
             }
         }
 
@@ -901,50 +1057,41 @@
             constructor() {
                 super();
                 this.x = width/2;
-                this.y = height/2;
-                this.vx = random(-3, 3);
-                this.vy = random(-3, 3);
-                this.color = [100, 100, 255];
-                this.size = random(8, 20);
+                this.y = height * 0.8;
+                this.vx = random(-1, 1);
+                this.vy = random(-0.5, -1);
+                this.color = [120, 100, 140];
+                this.size = random(5, 10);
             }
             
             update() {
                 super.update();
-                this.size *= 1.02;
-                this.life -= 2;
-            }
-            
-            display() {
-                push();
-                fill(this.color[0], this.color[1], this.color[2], this.life);
-                noStroke();
-                ellipse(this.x, this.y, this.size, this.size);
-                pop();
+                this.vy += 0.05; // Gravity
             }
         }
 
-        class EffectParticle extends Particle {
+        class TextureParticle extends Particle {
             constructor() {
                 super();
-                this.x = random(width);
+                this.x = random() > 0.5 ? 0 : width;
                 this.y = random(height);
-                this.vx = random(-2, 2);
-                this.vy = random(-2, 2);
-                this.color = [255, 255, 100];
+                this.vx = this.x === 0 ? random(0.5, 1) : random(-1, -0.5);
+                this.vy = random(-0.5, 0.5);
+                this.color = [100, 140, 120];
                 this.twinkle = random(TWO_PI);
             }
             
             update() {
                 super.update();
-                this.twinkle += 0.2;
+                this.twinkle += 0.05;
             }
             
             display() {
                 push();
-                let alpha = (sin(this.twinkle) + 1) * 0.5 * this.life;
+                let alpha = (sin(this.twinkle) + 1) * 0.25 * this.life;
                 fill(this.color[0], this.color[1], this.color[2], alpha);
                 noStroke();
-                ellipse(this.x, this.y, 4, 4);
+                ellipse(this.x, this.y, this.size * 2, this.size * 2);
                 pop();
             }
         }
@@ -952,30 +1099,28 @@
         class LeadParticle extends Particle {
             constructor() {
                 super();
-                this.x = random(width);
-                this.y = 0;
-                this.vx = random(-1, 1);
-                this.vy = random(2, 5);
-                this.color = [255, 100, 255];
-                this.trail = [];
+                this.x = width/2 + random(-50, 50);
+                this.y = height/2 + random(-50, 50);
+                this.angle = random(TWO_PI);
+                this.radius = 0;
+                this.color = [140, 120, 100];
             }
             
             update() {
-                this.trail.push({x: this.x, y: this.y, life: this.life});
-                if (this.trail.length > 8) this.trail.shift();
-                super.update();
+                this.radius += 1;
+                this.x = width/2 + cos(this.angle) * this.radius;
+                this.y = height/2 + sin(this.angle) * this.radius;
+                this.life -= 2;
             }
             
             display() {
-                for (let i = 0; i < this.trail.length; i++) {
-                    let t = this.trail[i];
-                    push();
-                    fill(this.color[0], this.color[1], this.color[2], t.life * (i / this.trail.length) * 0.5);
-                    noStroke();
-                    ellipse(t.x, t.y, 3, 3);
-                    pop();
-                }
-                super.display();
+                push();
+                stroke(this.color[0], this.color[1], this.color[2], this.life * 0.5);
+                strokeWeight(1);
+                noFill();
+                let size = this.radius * 0.1;
+                ellipse(this.x, this.y, size, size);
+                pop();
             }
         }
     </script>
